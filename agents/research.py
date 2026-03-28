@@ -13,17 +13,17 @@ from agents.models import CompRecord
 KERNEL_SH_BASE_URL = "https://api.onkernel.com"
 
 
-def create_kernel_session(api_key: str) -> tuple[str, str]:
-    """POST to kernel.sh to create a browser session. Returns (session_id, cdp_ws_url)."""
+def create_kernel_session(api_key: str) -> tuple[str, str, str]:
+    """POST to kernel.sh to create a headful browser session. Returns (session_id, cdp_ws_url, live_view_url)."""
     resp = requests.post(
         f"{KERNEL_SH_BASE_URL}/browsers",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"headless": True, "stealth": True, "timeout_seconds": 120},
+        json={"headless": False, "stealth": True, "timeout_seconds": 300},
         timeout=30,
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["session_id"], data["cdp_ws_url"]
+    return data["session_id"], data["cdp_ws_url"], data.get("browser_live_view_url", "")
 
 
 def destroy_kernel_session(api_key: str, session_id: str) -> None:
@@ -51,24 +51,27 @@ def run_playwright_scrape(
         page = context.new_page()
 
         # Login
-        page.goto("https://pitchbook.com/login", wait_until="networkidle")
+        page.goto("https://pitchbook.com/login", wait_until="domcontentloaded", timeout=60000)
+        time.sleep(3)
         sso_btn = page.query_selector("text=Sign in with SSO")
         if sso_btn:
             sso_btn.click()
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(2)
 
         page.fill("input[name='email'], input[type='email']", pitchbook_user)
         page.fill("input[name='password'], input[type='password']", pitchbook_pass)
         page.click("button[type='submit']")
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(4)
 
         # Navigate to company search
         page.goto(
             "https://pitchbook.com/platform/search#entities=company",
-            wait_until="networkidle",
+            wait_until="domcontentloaded",
+            timeout=60000,
         )
-        time.sleep(2)
+        time.sleep(3)
 
         # Apply sector filter
         sector_filter = page.query_selector("text=Sector")
@@ -182,7 +185,10 @@ def run_research_agent(
 
     if status_callback:
         status_callback("Research Agent: creating kernel.sh browser session...")
-    session_id, cdp_url = create_kernel_session(api_key)
+    session_id, cdp_url, live_view_url = create_kernel_session(api_key)
+
+    if status_callback and live_view_url:
+        status_callback(f"LIVE VIEW (open in browser): {live_view_url}")
 
     comps: list[CompRecord] = []
     try:

@@ -50,7 +50,11 @@ if submitted:
             log_lines.append(msg)
             with progress_log:
                 for line in log_lines:
-                    st.write(f"→ {line}")
+                    if line.startswith("LIVE VIEW"):
+                        url = line.split(": ", 1)[1]
+                        st.markdown(f"→ **[Open browser live view]({url})** ← click to watch/interact")
+                    else:
+                        st.write(f"→ {line}")
             status_box.info(msg)
 
         with st.spinner("Running pipeline..."):
