@@ -1,0 +1,57 @@
+[
+  {
+    "name": "Brex",
+    "sector": "Fintech",
+    "stage": "Series C",
+    "valuation_usd": 12300000000,
+    "arr_usd": 500000000,
+    "ebitda_usd": null,
+    "last_funding_round": "Series C",
+    "last_funding_amount_usd": 300000000,
+    "lead_investors": ["Tiger Global", "Greenoaks"]
+  },
+  {
+    "name": "Ramp",
+    "sector": "Fintech",
+    "stage": "Series D",
+    "valuation_usd": 7650000000,
+    "arr_usd": 300000000,
+    "ebitda_usd": null,
+    "last_funding_round": "Series D",
+    "last_funding_amount_usd": 750000000,
+    "lead_investors": ["Founders Fund", "Thrive Capital"]
+  },
+  {
+    "name": "Plaid",
+    "sector": "Fintech",
+    "stage": "Late Stage",
+    "valuation_usd": 13400000000,
+    "arr_usd": 400000000,
+    "ebitda_usd": null,
+    "last_funding_round": "Series D",
+    "last_funding_amount_usd": 425000000,
+    "lead_investors": ["Altimeter", "Silver Lake"]
+  },
+  {
+    "name": "Checkout.com",
+    "sector": "Fintech",
+    "stage": "Late Stage",
+    "valuation_usd": 40000000000,
+    "arr_usd": 1000000000,
+    "ebitda_usd": null,
+    "last_funding_round": "Series D",
+    "last_funding_amount_usd": 1000000000,
+    "lead_investors": ["Tiger Global", "Insight Partners"]
+  },
+  {
+    "name": "Marqeta",
+    "sector": "Fintech",
+    "stage": "Public",
+    "valuation_usd": 3500000000,
+    "arr_usd": 850000000,
+    "ebitda_usd": -120000000,
+    "last_funding_round": "IPO",
+    "last_funding_amount_usd": 1200000000,
+    "lead_investors": ["Visa", "Goldman Sachs"]
+  }
+]
