@@ -10,26 +10,26 @@ from playwright.sync_api import sync_playwright
 
 from agents.models import CompRecord
 
-KERNEL_SH_BASE_URL = "https://api.kernel.sh/v1"
+KERNEL_SH_BASE_URL = "https://api.onkernel.com"
 
 
 def create_kernel_session(api_key: str) -> tuple[str, str]:
-    """POST to kernel.sh to create a browser session. Returns (session_id, cdp_url)."""
+    """POST to kernel.sh to create a browser session. Returns (session_id, cdp_ws_url)."""
     resp = requests.post(
-        f"{KERNEL_SH_BASE_URL}/sessions",
+        f"{KERNEL_SH_BASE_URL}/browsers",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"browser": "chromium", "timeout": 120},
+        json={"headless": True, "stealth": True, "timeout_seconds": 120},
         timeout=30,
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["id"], data["cdpUrl"]
+    return data["session_id"], data["cdp_ws_url"]
 
 
 def destroy_kernel_session(api_key: str, session_id: str) -> None:
     """DELETE the kernel.sh session to free resources."""
     requests.delete(
-        f"{KERNEL_SH_BASE_URL}/sessions/{session_id}",
+        f"{KERNEL_SH_BASE_URL}/browsers/{session_id}",
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=15,
     )

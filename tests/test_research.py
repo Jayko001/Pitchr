@@ -22,17 +22,17 @@ MOCK_COMPS_JSON = [
 
 def test_create_kernel_session_returns_cdp_url(requests_mock):
     requests_mock.post(
-        "https://api.kernel.sh/v1/sessions",
-        json={"id": "sess_abc123", "cdpUrl": "wss://browser.kernel.sh/sess_abc123"},
+        "https://api.onkernel.com/browsers",
+        json={"session_id": "sess_abc123", "cdp_ws_url": "wss://browser.onkernel.com/sess_abc123"},
     )
     session_id, cdp_url = create_kernel_session(api_key="test_key")
     assert session_id == "sess_abc123"
-    assert cdp_url == "wss://browser.kernel.sh/sess_abc123"
+    assert cdp_url == "wss://browser.onkernel.com/sess_abc123"
 
 
 def test_destroy_kernel_session(requests_mock):
     requests_mock.delete(
-        "https://api.kernel.sh/v1/sessions/sess_abc123",
+        "https://api.onkernel.com/browsers/sess_abc123",
         json={"deleted": True},
     )
     destroy_kernel_session(api_key="test_key", session_id="sess_abc123")
