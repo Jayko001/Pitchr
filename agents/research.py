@@ -50,20 +50,32 @@ def run_playwright_scrape(
         context = browser.new_context()
         page = context.new_page()
 
-        # Login
-        page.goto("https://pitchbook.com/login", wait_until="domcontentloaded", timeout=60000)
-        time.sleep(3)
-        sso_btn = page.query_selector("text=Sign in with SSO")
-        if sso_btn:
-            sso_btn.click()
-            page.wait_for_load_state("domcontentloaded")
-            time.sleep(2)
+        # Navigate to PitchBook homepage — user logs in manually via the live view URL
+        page.goto("https://pitchbook.com", wait_until="domcontentloaded", timeout=60000)
+        time.sleep(2)
 
-        page.fill("input[name='email'], input[type='email']", pitchbook_user)
-        page.fill("input[name='password'], input[type='password']", pitchbook_pass)
-        page.click("button[type='submit']")
-        page.wait_for_load_state("domcontentloaded")
-        time.sleep(4)
+        # Wait up to 3 minutes for the user to log in manually.
+        # We detect login by waiting for a URL that contains /platform or /profiles.
+        try:
+            page.wait_for_url(
+                lambda url: "/platform" in url or "/profiles" in url or "pitchbook.com/your-dashboard" in url,
+                timeout=180000,
+            )
+        except Exception:
+            # If still not logged in, try auto-fill as fallback
+            try:
+                page.goto("https://pitchbook.com/login", wait_until="domcontentloaded", timeout=30000)
+                time.sleep(2)
+                email_input = page.query_selector("input[type='email']") or page.query_selector("input[name='email']") or page.query_selector("input[type='text']")
+                pass_input = page.query_selector("input[type='password']")
+                if email_input and pass_input:
+                    email_input.fill(pitchbook_user)
+                    pass_input.fill(pitchbook_pass)
+                    page.keyboard.press("Enter")
+                    page.wait_for_load_state("domcontentloaded")
+                    time.sleep(4)
+            except Exception:
+                pass
 
         # Navigate to company search
         page.goto(
@@ -193,7 +205,7 @@ def run_research_agent(
     comps: list[CompRecord] = []
     try:
         if status_callback:
-            status_callback("Research Agent: logging into PitchBook and scraping comps...")
+            status_callback("Research Agent: opened pitchbook.com — OPEN THE LIVE VIEW LINK ABOVE and log in manually. Waiting up to 3 minutes...")
         comps = scrape_pitchbook_comps(
             sector=sector,
             stage=stage,
