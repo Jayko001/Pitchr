@@ -1,6 +1,6 @@
 import json
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from agents.research import create_kernel_session, destroy_kernel_session, scrape_pitchbook_comps
 from agents.models import CompRecord
 
@@ -20,27 +20,34 @@ MOCK_COMPS_JSON = [
 ]
 
 
-def test_create_kernel_session_returns_cdp_url(requests_mock):
-    requests_mock.post(
-        "https://api.onkernel.com/browsers",
-        json={
-            "session_id": "sess_abc123",
-            "cdp_ws_url": "wss://browser.onkernel.com/sess_abc123",
-            "browser_live_view_url": "https://live.onkernel.com/sess_abc123",
-        },
-    )
-    session_id, cdp_url, live_url = create_kernel_session(api_key="test_key")
+def _mock_kernel_client():
+    mock_proxy = MagicMock()
+    mock_proxy.id = "proxy_123"
+
+    mock_browser = MagicMock()
+    mock_browser.session_id = "sess_abc123"
+    mock_browser.cdp_ws_url = "wss://browser.onkernel.com/sess_abc123"
+    mock_browser.browser_live_view_url = "https://live.onkernel.com/sess_abc123"
+
+    mock_client = MagicMock()
+    mock_client.proxies.create.return_value = mock_proxy
+    mock_client.browsers.create.return_value = mock_browser
+    return mock_client
+
+
+def test_create_kernel_session_returns_cdp_url():
+    with patch("agents.research.Kernel", return_value=_mock_kernel_client()):
+        session_id, cdp_url, live_url = create_kernel_session(api_key="test_key")
     assert session_id == "sess_abc123"
     assert cdp_url == "wss://browser.onkernel.com/sess_abc123"
     assert "live" in live_url
 
 
-def test_destroy_kernel_session(requests_mock):
-    requests_mock.delete(
-        "https://api.onkernel.com/browsers/sess_abc123",
-        json={"deleted": True},
-    )
-    destroy_kernel_session(api_key="test_key", session_id="sess_abc123")
+def test_destroy_kernel_session():
+    mock_client = _mock_kernel_client()
+    with patch("agents.research.Kernel", return_value=mock_client):
+        destroy_kernel_session(api_key="test_key", session_id="sess_abc123")
+    mock_client.browsers.delete.assert_called_once_with("sess_abc123")
 
 
 def test_scrape_pitchbook_comps_returns_comp_records(tmp_path, monkeypatch):

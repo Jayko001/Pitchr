@@ -7,32 +7,35 @@ from typing import Any, Optional, Callable
 
 import requests
 from playwright.sync_api import sync_playwright
+from kernel import Kernel
 
 from agents.models import CompRecord
 
-KERNEL_SH_BASE_URL = "https://api.onkernel.com"
-
 
 def create_kernel_session(api_key: str) -> tuple[str, str, str]:
-    """POST to kernel.sh to create a headful browser session. Returns (session_id, cdp_ws_url, live_view_url)."""
-    resp = requests.post(
-        f"{KERNEL_SH_BASE_URL}/browsers",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"headless": False, "stealth": True, "timeout_seconds": 300},
-        timeout=30,
+    """Create a headful browser with a US residential proxy. Returns (session_id, cdp_ws_url, live_view_url)."""
+    client = Kernel(api_key=api_key)
+
+    proxy = client.proxies.create(
+        type="residential",
+        name="pitchbook-us",
+        config={"country": "US"},
     )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["session_id"], data["cdp_ws_url"], data.get("browser_live_view_url", "")
+
+    browser = client.browsers.create(
+        headless=False,
+        stealth=True,
+        timeout_seconds=300,
+        proxy_id=proxy.id,
+    )
+
+    return browser.session_id, browser.cdp_ws_url, browser.browser_live_view_url or ""
 
 
 def destroy_kernel_session(api_key: str, session_id: str) -> None:
-    """DELETE the kernel.sh session to free resources."""
-    requests.delete(
-        f"{KERNEL_SH_BASE_URL}/browsers/{session_id}",
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=15,
-    )
+    """Delete the kernel.sh browser session."""
+    client = Kernel(api_key=api_key)
+    client.browsers.delete(session_id)
 
 
 def run_playwright_scrape(
