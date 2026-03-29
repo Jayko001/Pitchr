@@ -153,44 +153,38 @@ def run_playwright_scrape(
         context, page = _get_or_create_attached_page(browser)
 
         current_url = page.url or ""
-        if "pitchbook.com" not in current_url:
+
+        # If the existing tab already has search results loaded, use it as-is.
+        already_on_results = (
+            "pitchbook.com/platform" in current_url
+            or "pitchbook.com/profiles" in current_url
+        )
+
+        if already_on_results:
+            # User already has the right tab open — don't navigate away.
+            pass
+        elif "pitchbook.com" not in current_url:
+            # Not on PitchBook at all — navigate and wait for manual login.
             page.goto("https://pitchbook.com", wait_until="domcontentloaded", timeout=60000)
             time.sleep(2)
-
-        # If the attached tab is already logged in, take over immediately.
-        logged_in_page = page if _is_logged_in_url(page.url) else None
-
-        # Otherwise wait for the user to finish logging in on the existing tab.
-        if logged_in_page is None:
-            # If still not logged in, try auto-fill as fallback
             try:
-                logged_in_page = _wait_for_logged_in_page(browser, page, timeout_seconds=180)
+                page = _wait_for_logged_in_page(browser, page, timeout_seconds=180)
             except TimeoutError:
-                try:
-                    page.goto("https://pitchbook.com/login", wait_until="domcontentloaded", timeout=30000)
-                    time.sleep(2)
-                    email_input = page.query_selector("input[type='email']") or page.query_selector("input[name='email']") or page.query_selector("input[type='text']")
-                    pass_input = page.query_selector("input[type='password']")
-                    if email_input and pass_input:
-                        email_input.fill(pitchbook_user)
-                        pass_input.fill(pitchbook_pass)
-                        page.keyboard.press("Enter")
-                        page.wait_for_load_state("domcontentloaded")
-                        time.sleep(4)
-                        logged_in_page = _wait_for_logged_in_page(browser, page, timeout_seconds=30)
-                except Exception:
-                    pass
-
-        if logged_in_page is not None:
-            page = logged_in_page
-
-        # Navigate to company search
-        page.goto(
-            "https://pitchbook.com/platform/search#entities=company",
-            wait_until="domcontentloaded",
-            timeout=60000,
-        )
-        time.sleep(3)
+                pass
+            page.goto(
+                "https://pitchbook.com/platform/search#entities=company",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            time.sleep(3)
+        else:
+            # On PitchBook but not yet on a results page — navigate to search.
+            page.goto(
+                "https://pitchbook.com/platform/search#entities=company",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            time.sleep(3)
 
         # Apply sector filter
         sector_filter = page.query_selector("text=Sector")
@@ -351,7 +345,10 @@ def run_research_agent(
     comps: list[CompRecord] = []
     try:
         if status_callback:
-            status_callback("Research Agent: opened pitchbook.com — OPEN THE LIVE VIEW LINK ABOVE and log in manually. Waiting up to 3 minutes...")
+            if session_id_override:
+                status_callback("Research Agent: attaching to existing browser tab and scraping...")
+            else:
+                status_callback("Research Agent: opened pitchbook.com — OPEN THE LIVE VIEW LINK ABOVE and log in manually. Waiting up to 3 minutes...")
         comps = scrape_pitchbook_comps(
             sector=sector,
             stage=stage,
