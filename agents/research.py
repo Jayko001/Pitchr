@@ -156,7 +156,7 @@ def run_computer_use_scrape(
     kernel_client = Kernel(api_key=kernel_api_key)
 
     tools = [{
-        "type": "computer_20251022",
+        "type": "computer_20250124",
         "name": "computer",
         "display_width_px": 1280,
         "display_height_px": 800,
