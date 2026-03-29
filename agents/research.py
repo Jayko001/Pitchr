@@ -156,7 +156,7 @@ def run_computer_use_scrape(
     kernel_client = Kernel(api_key=kernel_api_key)
 
     tools = [{
-        "type": "computer_20250124",
+        "type": "computer_20241022",
         "name": "computer",
         "display_width_px": 1280,
         "display_height_px": 800,
@@ -194,12 +194,12 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
 
     for iteration in range(30):
         response = client.beta.messages.create(
-            model="claude-3-7-sonnet-20250219",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=4096,
             system=system,
             tools=tools,
             messages=messages,
-            betas=["computer-use-2025-01-24"],
+            betas=["computer-use-2024-10-22"],
         )
 
         messages.append({"role": "assistant", "content": response.content})
