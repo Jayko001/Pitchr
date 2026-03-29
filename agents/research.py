@@ -140,16 +140,102 @@ def _execute_computer_action(kernel_client: Kernel, session_id: str, action: dic
         kernel_client.browsers.computer.move_mouse(id=session_id, x=x, y=y)
 
 
+def _pitchbook_filter_guidance(sector: str, stage: str, description: str) -> str:
+    """Return PitchBook-specific filter instructions tailored to this company."""
+
+    # Map UI stage labels → PitchBook deal-type filter values
+    stage_to_deal_type = {
+        "Pre-Seed":  "Angel (individual)",
+        "Seed":      "Seed Round",
+        "Series A":  "Series A",
+        "Series B":  "Series B",
+        "Series C":  "Series C",
+        "Late Stage": "Late-Stage VC",
+    }
+    deal_type = stage_to_deal_type.get(stage, stage)
+
+    # Map broad sector labels → most relevant PitchBook Industry Verticals
+    sector_to_verticals = {
+        "Fintech":    ["FinTech", "B2B Payments", "InsurTech", "Mortgage Tech", "Mobile Commerce"],
+        "SaaS":       ["SaaS", "CloudTech & DevOps", "Marketing Tech", "HR Tech"],
+        "HealthTech": ["HealthTech", "Digital Health", "InsurTech"],
+        "EdTech":     ["EdTech"],
+        "E-commerce": ["E-Commerce", "Mobile Commerce", "FoodTech"],
+        "AI/ML":      ["Artificial Intelligence & Machine Learning", "Big Data", "SaaS"],
+        "Dev Tools":  ["CloudTech & DevOps", "SaaS", "Cybersecurity"],
+        "Other":      [],
+    }
+    verticals = sector_to_verticals.get(sector, [sector])
+    primary_vertical = verticals[0] if verticals else sector
+
+    return f"""
+=== PitchBook Companies & Deals Screener — filter guide ===
+
+TARGET COMPANY CONTEXT
+  Sector: {sector}
+  Stage:  {stage}
+  Description: {description}
+
+YOUR TASK
+Navigate to the PitchBook Companies & Deals Screener and apply these filters to find the
+best comparable companies, then extract the results.
+
+RECOMMENDED FILTERS TO APPLY
+1. Industries / Verticals & Keywords
+   Primary vertical to type: "{primary_vertical}"
+   Also consider adding: {", ".join(f'"{v}"' for v in verticals[1:3]) if len(verticals) > 1 else "none"}
+   Use OR logic between verticals.
+   Read the description above and add extra keyword(s) that match the business model
+   (e.g. "corporate card", "spend management", "payments", "expense tracking").
+
+2. Deal Type (under Venture Capital)
+   Select: "{deal_type}"
+   If that exact option is unavailable, pick the closest VC round to {stage}.
+
+3. Ownership Status
+   Select: "Privately Held (backing)" and/or "VC-backed"
+
+4. Location (optional but useful)
+   Keep as United States or leave unset.
+
+NAVIGATION STEPS
+1. Look at the current page. If you are already on a PitchBook search/screener page with
+   results visible, skip to step 4.
+2. Navigate to the Companies & Deals Screener:
+   click the "Companies" or "Screener" link in the top nav, or go to
+   https://my.pitchbook.com/
+3. Clear any existing filters (look for a "Clear all" or "Reset" button).
+4. In the "Industries, Verticals & Keywords" field type "{primary_vertical}" and select it.
+5. Set the Deal Type filter to "{deal_type}".
+6. Apply the filters and wait for results to load.
+7. Scroll through all visible results and collect up to 12 companies.
+
+DATA TO COLLECT PER COMPANY
+- name (string)
+- valuation_usd (float in dollars, e.g. 1_200_000_000 for $1.2B, null if unavailable)
+- arr_usd (float in dollars, null if unavailable)
+- ebitda_usd (float in dollars, null if unavailable)
+- last_funding_round (string, e.g. "Series B")
+- last_funding_amount_usd (float in dollars, null if unavailable)
+- lead_investors (list of strings)
+
+When finished collecting, output ONLY a valid JSON array — no prose, no markdown fences.
+Example:
+[{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "ebitda_usd": null, "last_funding_round": "Series B", "last_funding_amount_usd": 30000000, "lead_investors": ["Sequoia"]}}]
+"""
+
+
 def run_computer_use_scrape(
     session_id: str,
     sector: str,
     stage: str,
     anthropic_api_key: str,
     kernel_api_key: str,
+    description: str = "",
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> list[dict[str, Any]]:
     """
-    Use Claude computer-use to navigate PitchBook and extract comparable company data.
+    Use Claude to navigate PitchBook's Companies & Deals Screener and extract comp data.
     Claude sees screenshots of the browser and controls it via kernel.sh.
     """
     client = anthropic.Anthropic(api_key=anthropic_api_key)
@@ -192,22 +278,11 @@ def run_computer_use_scrape(
         },
     }]
 
-    system = f"""You are controlling a real web browser to extract company data from PitchBook.
-The browser viewport is 1280x800 pixels. Each tool call returns a fresh screenshot.
-
-Extract comparable company data for {sector} companies at {stage} stage.
-For each company collect:
-- name (string)
-- valuation_usd (float in dollars, null if unavailable)
-- arr_usd (float in dollars, null if unavailable)
-- ebitda_usd (float in dollars, null if unavailable)
-- last_funding_round (string, e.g. "Series B")
-- last_funding_amount_usd (float in dollars, null if unavailable)
-- lead_investors (list of strings)
-
-Scroll through all visible results to collect up to 12 companies.
-When finished, output ONLY a valid JSON array — no prose, no markdown fences.
-Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "ebitda_usd": null, "last_funding_round": "Series B", "last_funding_amount_usd": 30000000, "lead_investors": ["Sequoia"]}}]"""
+    system = (
+        "You are controlling a real web browser logged into PitchBook.\n"
+        "The viewport is 1280x800 pixels. Every browser_action call returns a fresh screenshot.\n\n"
+        + _pitchbook_filter_guidance(sector, stage, description)
+    )
 
     # Seed conversation with initial screenshot
     if status_callback:
@@ -220,10 +295,11 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
             {
                 "type": "text",
                 "text": (
-                    f"Here is the current browser screen (1280x800). "
-                    f"Extract all {sector} {stage} company data. "
-                    f"Use browser_action to scroll/click as needed. "
-                    f"When done, output the JSON array."
+                    f"Here is the current PitchBook browser screen (1280x800). "
+                    f"Follow the filter guide in the system prompt to navigate the "
+                    f"Companies & Deals Screener, apply the correct vertical and deal-type "
+                    f"filters for a {sector} company at {stage} stage, then collect up to "
+                    f"12 comparable companies and output the JSON array."
                 ),
             },
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": initial_screenshot}},
@@ -435,6 +511,7 @@ def scrape_pitchbook_comps(
 def run_research_agent(
     sector: str,
     stage: str,
+    description: str = "",
     kernel_session_id: Optional[str] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> list[CompRecord]:
@@ -470,6 +547,7 @@ def run_research_agent(
             session_id=session.session_id,
             sector=sector,
             stage=stage,
+            description=description,
             anthropic_api_key=anthropic_api_key,
             kernel_api_key=api_key,
             status_callback=status_callback,

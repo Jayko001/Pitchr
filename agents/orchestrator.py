@@ -66,6 +66,7 @@ def run_pipeline(
     comps = run_research_agent(
         sector=sector,
         stage=stage,
+        description=description,
         kernel_session_id=kernel_session_id,
         status_callback=_status,
     )
