@@ -75,13 +75,14 @@ def test_get_existing_kernel_session_returns_cdp_url():
 
 def test_run_research_agent_reuses_existing_session_without_deleting(monkeypatch):
     monkeypatch.setenv("KERNEL_SH_API_KEY", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     monkeypatch.setenv("PITCHBOOK_USER", "u@test.com")
     monkeypatch.setenv("PITCHBOOK_PASS", "p")
 
     statuses = []
 
     with patch("agents.research.get_existing_kernel_session", return_value=("sess_abc123", "wss://browser.onkernel.com/sess_abc123", "https://live.onkernel.com/sess_abc123")) as mock_get, \
-         patch("agents.research.scrape_pitchbook_comps", return_value=[CompRecord(**MOCK_COMPS_JSON[0])]), \
+         patch("agents.research.run_computer_use_scrape", return_value=[MOCK_COMPS_JSON[0]]), \
          patch("agents.research.destroy_kernel_session") as mock_destroy:
 
         comps = run_research_agent(

@@ -1,13 +1,14 @@
-"""Research Agent: creates a kernel.sh browser session, scrapes PitchBook comps."""
+"""Research Agent: Claude computer-use agent navigates PitchBook via kernel.sh browser."""
 from __future__ import annotations
 
+import base64
+import json
 import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional, Callable
 
-import requests
-from playwright.sync_api import sync_playwright
+import anthropic
 from kernel import Kernel
 
 from agents.models import CompRecord
@@ -20,6 +21,10 @@ class KernelSession:
     live_view_url: str
     should_destroy: bool
 
+
+# ---------------------------------------------------------------------------
+# Kernel session management
+# ---------------------------------------------------------------------------
 
 def create_kernel_session(api_key: str) -> tuple[str, str, str]:
     """Create a headful browser with a US residential proxy. Returns (session_id, cdp_ws_url, live_view_url)."""
@@ -52,49 +57,222 @@ def get_existing_kernel_session(
         return session_id, cdp_url, live_view_url or ""
 
     client = Kernel(api_key=api_key)
-    browsers_api = client.browsers
 
     for method_name in ("get", "retrieve", "fetch"):
-        method = getattr(browsers_api, method_name, None)
+        method = getattr(client.browsers, method_name, None)
         if not callable(method):
             continue
-
         browser = method(session_id)
-        resolved_session_id = getattr(browser, "session_id", None) or getattr(browser, "id", None) or session_id
-        resolved_cdp_url = getattr(browser, "cdp_ws_url", None) or getattr(browser, "cdp_url", None)
-        resolved_live_view_url = (
-            getattr(browser, "browser_live_view_url", None)
-            or getattr(browser, "live_view_url", None)
-            or ""
-        )
+        resolved_cdp = getattr(browser, "cdp_ws_url", None) or getattr(browser, "cdp_url", None)
+        resolved_live = getattr(browser, "browser_live_view_url", None) or ""
+        resolved_id = getattr(browser, "session_id", None) or session_id
+        if not resolved_cdp:
+            raise ValueError(f"No CDP URL found for session '{session_id}'.")
+        return resolved_id, resolved_cdp, resolved_live
 
-        if not resolved_cdp_url:
-            raise ValueError(
-                f"Kernel session '{session_id}' was found, but no CDP URL was returned. "
-                "Set KERNEL_SH_CDP_URL explicitly."
-            )
-
-        return resolved_session_id, resolved_cdp_url, resolved_live_view_url
-
-    raise ValueError(
-        f"Kernel session '{session_id}' was provided, but the installed SDK does not expose a browser lookup method. "
-        "Set KERNEL_SH_CDP_URL explicitly or update the SDK integration."
-    )
+    raise ValueError(f"SDK has no browser lookup method. Set KERNEL_SH_CDP_URL explicitly.")
 
 
 def destroy_kernel_session(api_key: str, session_id: str) -> None:
-    """Delete the kernel.sh browser session."""
     client = Kernel(api_key=api_key)
     client.browsers.delete(session_id)
 
 
+def resolve_kernel_session(
+    api_key: str,
+    existing_session_id: Optional[str] = None,
+    existing_cdp_url: Optional[str] = None,
+    existing_live_view_url: Optional[str] = None,
+) -> KernelSession:
+    if existing_session_id:
+        sid, cdp, live = get_existing_kernel_session(
+            api_key=api_key,
+            session_id=existing_session_id,
+            cdp_url=existing_cdp_url,
+            live_view_url=existing_live_view_url,
+        )
+        return KernelSession(session_id=sid, cdp_url=cdp, live_view_url=live, should_destroy=False)
+
+    sid, cdp, live = create_kernel_session(api_key)
+    return KernelSession(session_id=sid, cdp_url=cdp, live_view_url=live, should_destroy=True)
+
+
+# ---------------------------------------------------------------------------
+# Claude computer-use agent
+# ---------------------------------------------------------------------------
+
+def _take_screenshot(kernel_client: Kernel, session_id: str) -> str:
+    """Take a screenshot and return it as base64 PNG."""
+    img_data = kernel_client.browsers.computer.capture_screenshot(id=session_id)
+    return base64.b64encode(img_data.read()).decode()
+
+
+def _execute_computer_action(kernel_client: Kernel, session_id: str, action: dict) -> None:
+    """Execute a Claude computer-use action on the kernel.sh browser."""
+    action_type = action.get("action")
+
+    if action_type in ("left_click", "right_click", "double_click", "middle_click"):
+        x, y = action["coordinate"]
+        button = "right" if action_type == "right_click" else "left"
+        num_clicks = 2 if action_type == "double_click" else 1
+        kernel_client.browsers.computer.click_mouse(
+            id=session_id, x=x, y=y, button=button, num_clicks=num_clicks
+        )
+
+    elif action_type == "type":
+        kernel_client.browsers.computer.type_text(id=session_id, text=action["text"])
+
+    elif action_type == "key":
+        kernel_client.browsers.computer.press_key(id=session_id, keys=[action["text"]])
+
+    elif action_type == "scroll":
+        x, y = action["coordinate"]
+        direction = action.get("direction", "down")
+        amount = action.get("amount", 3)
+        delta_y = amount * 100 if direction == "down" else (-amount * 100 if direction == "up" else 0)
+        delta_x = amount * 100 if direction == "right" else (-amount * 100 if direction == "left" else 0)
+        kernel_client.browsers.computer.scroll(
+            id=session_id, x=x, y=y, delta_x=delta_x, delta_y=delta_y
+        )
+
+    elif action_type == "mouse_move":
+        x, y = action["coordinate"]
+        kernel_client.browsers.computer.move_mouse(id=session_id, x=x, y=y)
+
+
+def run_computer_use_scrape(
+    session_id: str,
+    sector: str,
+    stage: str,
+    anthropic_api_key: str,
+    kernel_api_key: str,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> list[dict[str, Any]]:
+    """
+    Use Claude computer-use to navigate PitchBook and extract comparable company data.
+    Claude sees screenshots of the browser and controls it via kernel.sh.
+    """
+    client = anthropic.Anthropic(api_key=anthropic_api_key)
+    kernel_client = Kernel(api_key=kernel_api_key)
+
+    tools = [{
+        "type": "computer_20251022",
+        "name": "computer",
+        "display_width_px": 1280,
+        "display_height_px": 800,
+    }]
+
+    system = f"""You are a data extraction agent on PitchBook. Extract comparable company data for {sector} companies at {stage} stage.
+
+For each company in the search results, collect:
+- name (string)
+- valuation_usd (float in dollars, e.g. 1200000000 for $1.2B, null if unavailable)
+- arr_usd (float in dollars, null if unavailable)
+- ebitda_usd (float in dollars, null if unavailable)
+- last_funding_round (string, e.g. "Series B")
+- last_funding_amount_usd (float in dollars, null if unavailable)
+- lead_investors (list of strings)
+
+Scroll through all visible results to collect up to 12 companies.
+When you have collected all available data, respond with ONLY a valid JSON array. No prose, no markdown.
+Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "ebitda_usd": null, "last_funding_round": "Series B", "last_funding_amount_usd": 30000000, "lead_investors": ["Sequoia"]}}]"""
+
+    # Seed conversation with initial screenshot
+    if status_callback:
+        status_callback("Research Agent: Claude taking initial screenshot of PitchBook...")
+
+    initial_screenshot = _take_screenshot(kernel_client, session_id)
+    messages: list[dict] = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": f"Extract all {sector} {stage} company data visible on screen. Scroll as needed to get up to 12 companies, then return the JSON array."},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": initial_screenshot}},
+        ],
+    }]
+
+    extracted: list[dict] = []
+
+    for iteration in range(30):
+        response = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=4096,
+            system=system,
+            tools=tools,
+            messages=messages,
+        )
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            # Claude finished — parse JSON from text response
+            for block in response.content:
+                if hasattr(block, "text"):
+                    raw = block.text.strip()
+                    start = raw.find("[")
+                    end = raw.rfind("]") + 1
+                    if start >= 0 and end > start:
+                        try:
+                            extracted = json.loads(raw[start:end])
+                        except json.JSONDecodeError:
+                            pass
+            if status_callback:
+                status_callback(f"Research Agent: Claude extracted {len(extracted)} companies.")
+            break
+
+        # Execute tool calls
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+
+            action = block.input
+
+            if action.get("action") == "screenshot":
+                if status_callback:
+                    status_callback(f"Research Agent: Claude taking screenshot (step {iteration + 1})...")
+                screenshot = _take_screenshot(kernel_client, session_id)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot}}],
+                })
+            else:
+                if status_callback:
+                    status_callback(f"Research Agent: Claude → {action.get('action')} at {action.get('coordinate', action.get('text', ''))}")
+                _execute_computer_action(kernel_client, session_id, action)
+                time.sleep(0.8)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "Action executed.",
+                })
+
+        if tool_results:
+            messages.append({"role": "user", "content": tool_results})
+
+    # Normalize extracted records
+    normalized = []
+    for comp in extracted:
+        comp.setdefault("sector", sector)
+        comp.setdefault("stage", stage)
+        comp.setdefault("ebitda_usd", None)
+        comp.setdefault("last_funding_round", "")
+        comp.setdefault("last_funding_amount_usd", None)
+        comp.setdefault("lead_investors", [])
+        normalized.append(comp)
+
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers (kept for tests that mock run_playwright_scrape)
+# ---------------------------------------------------------------------------
+
 def _is_logged_in_url(url: str) -> bool:
-    """Heuristic for a PitchBook page that indicates the user is logged in."""
     return any(marker in url for marker in ("/platform", "/profiles", "pitchbook.com/your-dashboard"))
 
 
 def _iter_browser_pages(browser: Any) -> list[tuple[Any, Any]]:
-    """Return every attached page paired with its browser context."""
     pages: list[tuple[Any, Any]] = []
     for context in browser.contexts:
         for page in context.pages:
@@ -103,29 +281,23 @@ def _iter_browser_pages(browser: Any) -> list[tuple[Any, Any]]:
 
 
 def _get_or_create_attached_page(browser: Any) -> tuple[Any, Any]:
-    """Reuse an existing page in the attached browser when possible."""
     pages = _iter_browser_pages(browser)
     for context, page in pages:
         if _is_logged_in_url(page.url):
             return context, page
-
     for context, page in pages:
         if "pitchbook.com" in page.url:
             return context, page
-
     if pages:
         return pages[-1]
-
     if browser.contexts:
         context = browser.contexts[0]
         return context, context.new_page()
-
     context = browser.new_context()
     return context, context.new_page()
 
 
 def _wait_for_logged_in_page(browser: Any, preferred_page: Any, timeout_seconds: int = 180) -> Any:
-    """Wait for any attached page to reach a logged-in PitchBook URL."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         for _, page in _iter_browser_pages(browser):
@@ -134,8 +306,7 @@ def _wait_for_logged_in_page(browser: Any, preferred_page: Any, timeout_seconds:
         if _is_logged_in_url(preferred_page.url):
             return preferred_page
         time.sleep(1)
-
-    raise TimeoutError("Timed out waiting for PitchBook login to complete.")
+    raise TimeoutError("Timed out waiting for PitchBook login.")
 
 
 def run_playwright_scrape(
@@ -145,100 +316,21 @@ def run_playwright_scrape(
     sector: str,
     stage: str,
 ) -> list[dict[str, Any]]:
-    """Connect Playwright to kernel.sh CDP session, log into PitchBook, scrape comps."""
+    """Fallback Playwright scraper (used in tests via mock)."""
+    from playwright.sync_api import sync_playwright
     comps: list[dict[str, Any]] = []
-
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(cdp_url)
-        context, page = _get_or_create_attached_page(browser)
-
-        current_url = page.url or ""
-
-        # If the existing tab already has search results loaded, use it as-is.
-        already_on_results = (
-            "pitchbook.com/platform" in current_url
-            or "pitchbook.com/profiles" in current_url
-        )
-
-        if already_on_results:
-            # User already has the right tab open — don't navigate away.
-            pass
-        elif "pitchbook.com" not in current_url:
-            # Not on PitchBook at all — navigate and wait for manual login.
-            page.goto("https://pitchbook.com", wait_until="domcontentloaded", timeout=60000)
-            time.sleep(2)
-            try:
-                page = _wait_for_logged_in_page(browser, page, timeout_seconds=180)
-            except TimeoutError:
-                pass
-            page.goto(
-                "https://pitchbook.com/platform/search#entities=company",
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-            time.sleep(3)
-        else:
-            # On PitchBook but not yet on a results page — navigate to search.
-            page.goto(
-                "https://pitchbook.com/platform/search#entities=company",
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-            time.sleep(3)
-
-        # Wait for page to fully settle before touching any selectors
+        _, page = _get_or_create_attached_page(browser)
         try:
             page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
         time.sleep(2)
-
-        # Apply sector filter
-        try:
-            sector_filter = page.query_selector("text=Sector")
-            if sector_filter:
-                sector_filter.click()
-                page.wait_for_load_state("domcontentloaded", timeout=5000)
-                try:
-                    page.wait_for_selector("input[placeholder*='Search']", timeout=5000)
-                    page.fill("input[placeholder*='Search']", sector)
-                except Exception:
-                    pass
-                option = page.query_selector(f"text={sector}")
-                if option:
-                    option.click()
-                time.sleep(1)
-        except Exception:
-            pass
-
-        # Apply stage filter
-        try:
-            stage_filter = page.query_selector("text=Deal Stage")
-            if stage_filter:
-                stage_filter.click()
-                page.wait_for_load_state("domcontentloaded", timeout=5000)
-                option = page.query_selector(f"text={stage}")
-                if option:
-                    option.click()
-                time.sleep(1)
-        except Exception:
-            pass
-
-        # Wait for results to load
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=10000)
-            page.wait_for_selector("table, [data-testid='results-table'], tbody tr", timeout=10000)
-        except Exception:
-            return comps
-
-        time.sleep(1)
-
-        # Scrape — snapshot rows before iterating to avoid mid-navigation context destruction
         try:
             rows = page.query_selector_all("tr[data-company-id], tbody tr")
         except Exception:
             return comps
-
         for row in rows[:12]:
             try:
                 cells = row.query_selector_all("td")
@@ -259,12 +351,10 @@ def run_playwright_scrape(
                     comps.append(comp)
             except Exception:
                 continue
-
     return comps
 
 
 def _parse_usd(text: str) -> float | None:
-    """Convert '$120M', '$1.2B', '—' etc. to float or None."""
     text = text.strip().replace(",", "").replace("$", "")
     if not text or text in ("—", "-", "N/A", ""):
         return None
@@ -291,7 +381,7 @@ def scrape_pitchbook_comps(
     pitchbook_user: str,
     pitchbook_pass: str,
 ) -> list[CompRecord]:
-    """Run the Playwright scraper and return validated CompRecord list."""
+    """Fallback: used by tests that mock run_playwright_scrape."""
     raw = run_playwright_scrape(
         cdp_url=cdp_url,
         pitchbook_user=pitchbook_user,
@@ -302,35 +392,9 @@ def scrape_pitchbook_comps(
     return [CompRecord(**r) for r in raw]
 
 
-def resolve_kernel_session(
-    api_key: str,
-    existing_session_id: Optional[str] = None,
-    existing_cdp_url: Optional[str] = None,
-    existing_live_view_url: Optional[str] = None,
-) -> KernelSession:
-    """Create a new kernel.sh session or reuse an existing one."""
-    if existing_session_id:
-        session_id, cdp_url, live_view_url = get_existing_kernel_session(
-            api_key=api_key,
-            session_id=existing_session_id,
-            cdp_url=existing_cdp_url,
-            live_view_url=existing_live_view_url,
-        )
-        return KernelSession(
-            session_id=session_id,
-            cdp_url=cdp_url,
-            live_view_url=live_view_url,
-            should_destroy=False,
-        )
-
-    session_id, cdp_url, live_view_url = create_kernel_session(api_key)
-    return KernelSession(
-        session_id=session_id,
-        cdp_url=cdp_url,
-        live_view_url=live_view_url,
-        should_destroy=True,
-    )
-
+# ---------------------------------------------------------------------------
+# Top-level entry point
+# ---------------------------------------------------------------------------
 
 def run_research_agent(
     sector: str,
@@ -340,11 +404,10 @@ def run_research_agent(
 ) -> list[CompRecord]:
     """
     Top-level entry point called by the orchestrator.
-    Creates a kernel.sh session, scrapes PitchBook, destroys session.
+    Uses Claude computer-use to extract comps from PitchBook via kernel.sh.
     """
     api_key = os.environ["KERNEL_SH_API_KEY"]
-    pb_user = os.environ["PITCHBOOK_USER"]
-    pb_pass = os.environ["PITCHBOOK_PASS"]
+    anthropic_api_key = os.environ["ANTHROPIC_API_KEY"]
     session_id_override = kernel_session_id or os.getenv("KERNEL_SH_SESSION_ID")
     cdp_url_override = os.getenv("KERNEL_SH_CDP_URL")
     live_view_url_override = os.getenv("KERNEL_SH_LIVE_VIEW_URL")
@@ -354,6 +417,7 @@ def run_research_agent(
             status_callback(f"Research Agent: reusing kernel.sh browser session '{session_id_override}'...")
         else:
             status_callback("Research Agent: creating kernel.sh browser session...")
+
     session = resolve_kernel_session(
         api_key=api_key,
         existing_session_id=session_id_override,
@@ -366,18 +430,15 @@ def run_research_agent(
 
     comps: list[CompRecord] = []
     try:
-        if status_callback:
-            if session_id_override:
-                status_callback("Research Agent: attaching to existing browser tab and scraping...")
-            else:
-                status_callback("Research Agent: opened pitchbook.com — OPEN THE LIVE VIEW LINK ABOVE and log in manually. Waiting up to 3 minutes...")
-        comps = scrape_pitchbook_comps(
+        raw = run_computer_use_scrape(
+            session_id=session.session_id,
             sector=sector,
             stage=stage,
-            cdp_url=session.cdp_url,
-            pitchbook_user=pb_user,
-            pitchbook_pass=pb_pass,
+            anthropic_api_key=anthropic_api_key,
+            kernel_api_key=api_key,
+            status_callback=status_callback,
         )
+        comps = [CompRecord(**r) for r in raw]
     finally:
         if session.should_destroy:
             destroy_kernel_session(api_key, session.session_id)
