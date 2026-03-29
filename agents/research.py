@@ -193,12 +193,13 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
     extracted: list[dict] = []
 
     for iteration in range(30):
-        response = client.messages.create(
+        response = client.beta.messages.create(
             model="claude-3-7-sonnet-20250219",
             max_tokens=4096,
             system=system,
             tools=tools,
             messages=messages,
+            betas=["computer-use-2025-01-24"],
         )
 
         messages.append({"role": "assistant", "content": response.content})
