@@ -198,17 +198,44 @@ RECOMMENDED FILTERS TO APPLY
 4. Location (optional but useful)
    Keep as United States or leave unset.
 
-NAVIGATION STEPS
-1. Look at the current page. If you are already on a PitchBook search/screener page with
-   results visible, skip to step 4.
-2. Navigate to the Companies & Deals Screener:
-   click the "Companies" or "Screener" link in the top nav, or go to
-   https://my.pitchbook.com/
-3. Clear any existing filters (look for a "Clear all" or "Reset" button).
-4. In the "Industries, Verticals & Keywords" field type "{primary_vertical}" and select it.
-5. Set the Deal Type filter to "{deal_type}".
-6. Apply the filters and wait for results to load.
-7. Scroll through all visible results and collect up to 12 companies.
+STEP-BY-STEP NAVIGATION
+
+STEP 1 — Get to the screener
+  Take a screenshot to see where you are.
+  If you can already see a search/screener sidebar with filter fields, go to STEP 2.
+  Otherwise navigate to the screener: look for a top-nav item labelled "Companies",
+  "Screener", or "Search", click it, and wait for the page to load.
+
+STEP 2 — Find the Industries / Verticals & Keywords input
+  Look in the left sidebar (or top filter bar) for a field whose placeholder text says
+  something like "Type industries, verticals, keywords…" or "Industries, Verticals &
+  Keywords". It is usually the very first or second filter field.
+  Click directly inside that text input box.
+
+STEP 3 — Type the primary vertical
+  Type exactly: {primary_vertical}
+  Wait for the autocomplete dropdown to appear (usually within 1–2 seconds).
+  Click the matching suggestion in the dropdown to select it as a tag/chip.
+
+STEP 4 — Add additional verticals / keywords
+  Repeat STEP 3 for each of these (click inside the same input each time):
+    {chr(10).join(f'  • {v}' for v in verticals[1:3]) if len(verticals) > 1 else '  (none required)'}
+  Then type 1–2 short keywords derived from the description that narrow to the business
+  model (e.g. "corporate card", "spend management", "payments").
+  Select each suggestion from the dropdown.
+
+STEP 5 — Confirm OR logic
+  After adding all verticals, check if there is a toggle for AND/OR logic near the field.
+  If present, make sure it is set to OR.
+
+STEP 6 — Set Deal Type
+  Scroll down in the filter panel to find "Deal Type" under the Venture Capital section.
+  Click to expand it, then select "{deal_type}".
+  If that exact option is absent, pick the closest VC round to {stage}.
+
+STEP 7 — Apply and collect results
+  Click the "Search", "Apply", or "View Results" button (or wait for auto-refresh).
+  Once results load, scroll through the list and collect up to 12 companies.
 
 DATA TO COLLECT PER COMPANY
 - name (string)
