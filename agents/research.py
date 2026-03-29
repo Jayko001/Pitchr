@@ -186,42 +186,64 @@ def run_playwright_scrape(
             )
             time.sleep(3)
 
+        # Wait for page to fully settle before touching any selectors
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+        time.sleep(2)
+
         # Apply sector filter
-        sector_filter = page.query_selector("text=Sector")
-        if sector_filter:
-            sector_filter.click()
-            try:
-                page.wait_for_selector("input[placeholder*='Search']", timeout=5000)
-                page.fill("input[placeholder*='Search']", sector)
-            except Exception:
-                pass
-            option = page.query_selector(f"text={sector}")
-            if option:
-                option.click()
-            time.sleep(1)
+        try:
+            sector_filter = page.query_selector("text=Sector")
+            if sector_filter:
+                sector_filter.click()
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+                try:
+                    page.wait_for_selector("input[placeholder*='Search']", timeout=5000)
+                    page.fill("input[placeholder*='Search']", sector)
+                except Exception:
+                    pass
+                option = page.query_selector(f"text={sector}")
+                if option:
+                    option.click()
+                time.sleep(1)
+        except Exception:
+            pass
 
         # Apply stage filter
-        stage_filter = page.query_selector("text=Deal Stage")
-        if stage_filter:
-            stage_filter.click()
-            option = page.query_selector(f"text={stage}")
-            if option:
-                option.click()
-            time.sleep(1)
-
-        # Scrape results
         try:
-            page.wait_for_selector("table, [data-testid='results-table']", timeout=10000)
+            stage_filter = page.query_selector("text=Deal Stage")
+            if stage_filter:
+                stage_filter.click()
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+                option = page.query_selector(f"text={stage}")
+                if option:
+                    option.click()
+                time.sleep(1)
+        except Exception:
+            pass
+
+        # Wait for results to load
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+            page.wait_for_selector("table, [data-testid='results-table'], tbody tr", timeout=10000)
         except Exception:
             return comps
 
-        rows = page.query_selector_all("tr[data-company-id], tbody tr")
+        time.sleep(1)
+
+        # Scrape — snapshot rows before iterating to avoid mid-navigation context destruction
+        try:
+            rows = page.query_selector_all("tr[data-company-id], tbody tr")
+        except Exception:
+            return comps
 
         for row in rows[:12]:
-            cells = row.query_selector_all("td")
-            if len(cells) < 4:
-                continue
             try:
+                cells = row.query_selector_all("td")
+                if len(cells) < 4:
+                    continue
                 comp = {
                     "name": cells[0].inner_text().strip(),
                     "sector": sector,
