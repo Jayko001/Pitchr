@@ -306,9 +306,15 @@ def run_computer_use_scrape(
         ],
     }]
 
+    def _log(msg: str) -> None:
+        print(msg, flush=True)
+        if status_callback:
+            status_callback(msg)
+
     extracted: list[dict] = []
 
     for iteration in range(30):
+        print(f"\n[step {iteration + 1}] calling Claude...", flush=True)
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=4096,
@@ -319,8 +325,15 @@ def run_computer_use_scrape(
 
         messages.append({"role": "assistant", "content": response.content})
 
+        # Print any text blocks Claude returned (its reasoning / commentary)
+        for block in response.content:
+            if hasattr(block, "text") and block.text.strip():
+                text = block.text.strip()
+                # Skip blocks that are purely the final JSON array
+                if not text.startswith("["):
+                    print(f"[claude] {text}", flush=True)
+
         if response.stop_reason == "end_turn":
-            # Claude finished — parse JSON from text response
             for block in response.content:
                 if hasattr(block, "text"):
                     raw = block.text.strip()
@@ -331,8 +344,7 @@ def run_computer_use_scrape(
                             extracted = json.loads(raw[start:end])
                         except json.JSONDecodeError:
                             pass
-            if status_callback:
-                status_callback(f"Research Agent: Claude extracted {len(extracted)} companies.")
+            _log(f"Research Agent: Claude extracted {len(extracted)} companies.")
             break
 
         # Execute tool calls — always return a screenshot so Claude sees the result
@@ -342,9 +354,9 @@ def run_computer_use_scrape(
                 continue
 
             action = block.input
+            action_type = action.get("action", "")
             coord_or_text = action.get("coordinate", action.get("text", ""))
-            if status_callback:
-                status_callback(f"Research Agent: Claude → {action.get('action')} {coord_or_text}")
+            _log(f"Research Agent: Claude → {action_type} {coord_or_text}")
 
             _execute_computer_action(kernel_client, session_id, action)
             time.sleep(0.8)
