@@ -194,7 +194,7 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
 
     for iteration in range(30):
         response = client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-3-7-sonnet-20250219",
             max_tokens=4096,
             system=system,
             tools=tools,
