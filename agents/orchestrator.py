@@ -37,6 +37,7 @@ def run_pipeline(
     stage: str,
     description: str,
     output_dir: str,
+    kernel_session_id: Optional[str] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> dict[str, str]:
     """
@@ -62,7 +63,12 @@ def run_pipeline(
 
     # Step 1: Research
     _status("Starting Research Agent...")
-    comps = run_research_agent(sector=sector, stage=stage, status_callback=_status)
+    comps = run_research_agent(
+        sector=sector,
+        stage=stage,
+        kernel_session_id=kernel_session_id,
+        status_callback=_status,
+    )
 
     if not comps:
         _status("No comps found — loading fallback fixtures...")

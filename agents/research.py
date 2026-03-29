@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from typing import Any, Optional, Callable
 
 import requests
@@ -10,6 +11,14 @@ from playwright.sync_api import sync_playwright
 from kernel import Kernel
 
 from agents.models import CompRecord
+
+
+@dataclass(frozen=True)
+class KernelSession:
+    session_id: str
+    cdp_url: str
+    live_view_url: str
+    should_destroy: bool
 
 
 def create_kernel_session(api_key: str) -> tuple[str, str, str]:
@@ -32,10 +41,101 @@ def create_kernel_session(api_key: str) -> tuple[str, str, str]:
     return browser.session_id, browser.cdp_ws_url, browser.browser_live_view_url or ""
 
 
+def get_existing_kernel_session(
+    api_key: str,
+    session_id: str,
+    cdp_url: Optional[str] = None,
+    live_view_url: Optional[str] = None,
+) -> tuple[str, str, str]:
+    """Resolve a previously created kernel.sh session to its CDP/live-view URLs."""
+    if cdp_url:
+        return session_id, cdp_url, live_view_url or ""
+
+    client = Kernel(api_key=api_key)
+    browsers_api = client.browsers
+
+    for method_name in ("get", "retrieve", "fetch"):
+        method = getattr(browsers_api, method_name, None)
+        if not callable(method):
+            continue
+
+        browser = method(session_id)
+        resolved_session_id = getattr(browser, "session_id", None) or getattr(browser, "id", None) or session_id
+        resolved_cdp_url = getattr(browser, "cdp_ws_url", None) or getattr(browser, "cdp_url", None)
+        resolved_live_view_url = (
+            getattr(browser, "browser_live_view_url", None)
+            or getattr(browser, "live_view_url", None)
+            or ""
+        )
+
+        if not resolved_cdp_url:
+            raise ValueError(
+                f"Kernel session '{session_id}' was found, but no CDP URL was returned. "
+                "Set KERNEL_SH_CDP_URL explicitly."
+            )
+
+        return resolved_session_id, resolved_cdp_url, resolved_live_view_url
+
+    raise ValueError(
+        f"Kernel session '{session_id}' was provided, but the installed SDK does not expose a browser lookup method. "
+        "Set KERNEL_SH_CDP_URL explicitly or update the SDK integration."
+    )
+
+
 def destroy_kernel_session(api_key: str, session_id: str) -> None:
     """Delete the kernel.sh browser session."""
     client = Kernel(api_key=api_key)
     client.browsers.delete(session_id)
+
+
+def _is_logged_in_url(url: str) -> bool:
+    """Heuristic for a PitchBook page that indicates the user is logged in."""
+    return any(marker in url for marker in ("/platform", "/profiles", "pitchbook.com/your-dashboard"))
+
+
+def _iter_browser_pages(browser: Any) -> list[tuple[Any, Any]]:
+    """Return every attached page paired with its browser context."""
+    pages: list[tuple[Any, Any]] = []
+    for context in browser.contexts:
+        for page in context.pages:
+            pages.append((context, page))
+    return pages
+
+
+def _get_or_create_attached_page(browser: Any) -> tuple[Any, Any]:
+    """Reuse an existing page in the attached browser when possible."""
+    pages = _iter_browser_pages(browser)
+    for context, page in pages:
+        if _is_logged_in_url(page.url):
+            return context, page
+
+    for context, page in pages:
+        if "pitchbook.com" in page.url:
+            return context, page
+
+    if pages:
+        return pages[-1]
+
+    if browser.contexts:
+        context = browser.contexts[0]
+        return context, context.new_page()
+
+    context = browser.new_context()
+    return context, context.new_page()
+
+
+def _wait_for_logged_in_page(browser: Any, preferred_page: Any, timeout_seconds: int = 180) -> Any:
+    """Wait for any attached page to reach a logged-in PitchBook URL."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        for _, page in _iter_browser_pages(browser):
+            if _is_logged_in_url(page.url):
+                return page
+        if _is_logged_in_url(preferred_page.url):
+            return preferred_page
+        time.sleep(1)
+
+    raise TimeoutError("Timed out waiting for PitchBook login to complete.")
 
 
 def run_playwright_scrape(
@@ -50,35 +150,39 @@ def run_playwright_scrape(
 
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(cdp_url)
-        context = browser.new_context()
-        page = context.new_page()
+        context, page = _get_or_create_attached_page(browser)
 
-        # Navigate to PitchBook homepage — user logs in manually via the live view URL
-        page.goto("https://pitchbook.com", wait_until="domcontentloaded", timeout=60000)
-        time.sleep(2)
+        current_url = page.url or ""
+        if "pitchbook.com" not in current_url:
+            page.goto("https://pitchbook.com", wait_until="domcontentloaded", timeout=60000)
+            time.sleep(2)
 
-        # Wait up to 3 minutes for the user to log in manually.
-        # We detect login by waiting for a URL that contains /platform or /profiles.
-        try:
-            page.wait_for_url(
-                lambda url: "/platform" in url or "/profiles" in url or "pitchbook.com/your-dashboard" in url,
-                timeout=180000,
-            )
-        except Exception:
+        # If the attached tab is already logged in, take over immediately.
+        logged_in_page = page if _is_logged_in_url(page.url) else None
+
+        # Otherwise wait for the user to finish logging in on the existing tab.
+        if logged_in_page is None:
             # If still not logged in, try auto-fill as fallback
             try:
-                page.goto("https://pitchbook.com/login", wait_until="domcontentloaded", timeout=30000)
-                time.sleep(2)
-                email_input = page.query_selector("input[type='email']") or page.query_selector("input[name='email']") or page.query_selector("input[type='text']")
-                pass_input = page.query_selector("input[type='password']")
-                if email_input and pass_input:
-                    email_input.fill(pitchbook_user)
-                    pass_input.fill(pitchbook_pass)
-                    page.keyboard.press("Enter")
-                    page.wait_for_load_state("domcontentloaded")
-                    time.sleep(4)
-            except Exception:
-                pass
+                logged_in_page = _wait_for_logged_in_page(browser, page, timeout_seconds=180)
+            except TimeoutError:
+                try:
+                    page.goto("https://pitchbook.com/login", wait_until="domcontentloaded", timeout=30000)
+                    time.sleep(2)
+                    email_input = page.query_selector("input[type='email']") or page.query_selector("input[name='email']") or page.query_selector("input[type='text']")
+                    pass_input = page.query_selector("input[type='password']")
+                    if email_input and pass_input:
+                        email_input.fill(pitchbook_user)
+                        pass_input.fill(pitchbook_pass)
+                        page.keyboard.press("Enter")
+                        page.wait_for_load_state("domcontentloaded")
+                        time.sleep(4)
+                        logged_in_page = _wait_for_logged_in_page(browser, page, timeout_seconds=30)
+                except Exception:
+                    pass
+
+        if logged_in_page is not None:
+            page = logged_in_page
 
         # Navigate to company search
         page.goto(
@@ -115,7 +219,6 @@ def run_playwright_scrape(
         try:
             page.wait_for_selector("table, [data-testid='results-table']", timeout=10000)
         except Exception:
-            browser.close()
             return comps
 
         rows = page.query_selector_all("tr[data-company-id], tbody tr")
@@ -140,8 +243,6 @@ def run_playwright_scrape(
                     comps.append(comp)
             except Exception:
                 continue
-
-        browser.close()
 
     return comps
 
@@ -185,9 +286,40 @@ def scrape_pitchbook_comps(
     return [CompRecord(**r) for r in raw]
 
 
+def resolve_kernel_session(
+    api_key: str,
+    existing_session_id: Optional[str] = None,
+    existing_cdp_url: Optional[str] = None,
+    existing_live_view_url: Optional[str] = None,
+) -> KernelSession:
+    """Create a new kernel.sh session or reuse an existing one."""
+    if existing_session_id:
+        session_id, cdp_url, live_view_url = get_existing_kernel_session(
+            api_key=api_key,
+            session_id=existing_session_id,
+            cdp_url=existing_cdp_url,
+            live_view_url=existing_live_view_url,
+        )
+        return KernelSession(
+            session_id=session_id,
+            cdp_url=cdp_url,
+            live_view_url=live_view_url,
+            should_destroy=False,
+        )
+
+    session_id, cdp_url, live_view_url = create_kernel_session(api_key)
+    return KernelSession(
+        session_id=session_id,
+        cdp_url=cdp_url,
+        live_view_url=live_view_url,
+        should_destroy=True,
+    )
+
+
 def run_research_agent(
     sector: str,
     stage: str,
+    kernel_session_id: Optional[str] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> list[CompRecord]:
     """
@@ -197,13 +329,24 @@ def run_research_agent(
     api_key = os.environ["KERNEL_SH_API_KEY"]
     pb_user = os.environ["PITCHBOOK_USER"]
     pb_pass = os.environ["PITCHBOOK_PASS"]
+    session_id_override = kernel_session_id or os.getenv("KERNEL_SH_SESSION_ID")
+    cdp_url_override = os.getenv("KERNEL_SH_CDP_URL")
+    live_view_url_override = os.getenv("KERNEL_SH_LIVE_VIEW_URL")
 
     if status_callback:
-        status_callback("Research Agent: creating kernel.sh browser session...")
-    session_id, cdp_url, live_view_url = create_kernel_session(api_key)
+        if session_id_override:
+            status_callback(f"Research Agent: reusing kernel.sh browser session '{session_id_override}'...")
+        else:
+            status_callback("Research Agent: creating kernel.sh browser session...")
+    session = resolve_kernel_session(
+        api_key=api_key,
+        existing_session_id=session_id_override,
+        existing_cdp_url=cdp_url_override,
+        existing_live_view_url=live_view_url_override,
+    )
 
-    if status_callback and live_view_url:
-        status_callback(f"LIVE VIEW (open in browser): {live_view_url}")
+    if status_callback and session.live_view_url:
+        status_callback(f"LIVE VIEW (open in browser): {session.live_view_url}")
 
     comps: list[CompRecord] = []
     try:
@@ -212,12 +355,15 @@ def run_research_agent(
         comps = scrape_pitchbook_comps(
             sector=sector,
             stage=stage,
-            cdp_url=cdp_url,
+            cdp_url=session.cdp_url,
             pitchbook_user=pb_user,
             pitchbook_pass=pb_pass,
         )
     finally:
-        destroy_kernel_session(api_key, session_id)
+        if session.should_destroy:
+            destroy_kernel_session(api_key, session.session_id)
+        elif status_callback:
+            status_callback(f"Research Agent: preserved existing kernel.sh session '{session.session_id}'.")
         if status_callback:
             status_callback(f"Research Agent: done. Found {len(comps)} comps.")
 

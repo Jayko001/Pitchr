@@ -1,6 +1,7 @@
 """Streamlit UI: startup analysis agent front-end."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -23,6 +24,12 @@ st.caption("Enter a startup → get a comps Excel model + pitch deck PowerPoint"
 
 with st.form("startup_form"):
     startup_name = st.text_input("Startup Name", placeholder="e.g. PayFlow")
+    kernel_session_id = st.text_input(
+        "Existing Kernel Session ID (optional)",
+        value=os.getenv("KERNEL_SH_SESSION_ID", ""),
+        placeholder="e.g. d1cmoo61uqvvth2uq7p59all",
+        help="Reuse an already-running Kernel browser session instead of creating a new one.",
+    )
     sector = st.selectbox(
         "Sector",
         ["Fintech", "SaaS", "HealthTech", "EdTech", "E-commerce", "AI/ML", "Dev Tools", "Other"],
@@ -65,6 +72,7 @@ if submitted:
                     stage=stage,
                     description=description,
                     output_dir=OUTPUT_DIR,
+                    kernel_session_id=kernel_session_id.strip() or None,
                     status_callback=update_status,
                 )
 
