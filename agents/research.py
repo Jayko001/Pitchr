@@ -156,17 +156,49 @@ def run_computer_use_scrape(
     kernel_client = Kernel(api_key=kernel_api_key)
 
     tools = [{
-        "type": "computer_20241022",
-        "name": "computer",
-        "display_width_px": 1280,
-        "display_height_px": 800,
+        "name": "browser_action",
+        "description": (
+            "Control the browser (1280x800 screen). After each action a fresh screenshot "
+            "is returned automatically so you can see the result."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["left_click", "right_click", "double_click", "type", "key", "scroll", "mouse_move"],
+                    "description": "Browser action to perform",
+                },
+                "coordinate": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "[x, y] pixel coordinate on the 1280x800 screen",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text to type, or key name such as 'Return' or 'Tab'",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                    "description": "Scroll direction",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Scroll clicks (default 3)",
+                },
+            },
+            "required": ["action"],
+        },
     }]
 
-    system = f"""You are a data extraction agent on PitchBook. Extract comparable company data for {sector} companies at {stage} stage.
+    system = f"""You are controlling a real web browser to extract company data from PitchBook.
+The browser viewport is 1280x800 pixels. Each tool call returns a fresh screenshot.
 
-For each company in the search results, collect:
+Extract comparable company data for {sector} companies at {stage} stage.
+For each company collect:
 - name (string)
-- valuation_usd (float in dollars, e.g. 1200000000 for $1.2B, null if unavailable)
+- valuation_usd (float in dollars, null if unavailable)
 - arr_usd (float in dollars, null if unavailable)
 - ebitda_usd (float in dollars, null if unavailable)
 - last_funding_round (string, e.g. "Series B")
@@ -174,7 +206,7 @@ For each company in the search results, collect:
 - lead_investors (list of strings)
 
 Scroll through all visible results to collect up to 12 companies.
-When you have collected all available data, respond with ONLY a valid JSON array. No prose, no markdown.
+When finished, output ONLY a valid JSON array — no prose, no markdown fences.
 Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "ebitda_usd": null, "last_funding_round": "Series B", "last_funding_amount_usd": 30000000, "lead_investors": ["Sequoia"]}}]"""
 
     # Seed conversation with initial screenshot
@@ -185,7 +217,15 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
     messages: list[dict] = [{
         "role": "user",
         "content": [
-            {"type": "text", "text": f"Extract all {sector} {stage} company data visible on screen. Scroll as needed to get up to 12 companies, then return the JSON array."},
+            {
+                "type": "text",
+                "text": (
+                    f"Here is the current browser screen (1280x800). "
+                    f"Extract all {sector} {stage} company data. "
+                    f"Use browser_action to scroll/click as needed. "
+                    f"When done, output the JSON array."
+                ),
+            },
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": initial_screenshot}},
         ],
     }]
@@ -193,13 +233,12 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
     extracted: list[dict] = []
 
     for iteration in range(30):
-        response = client.beta.messages.create(
-            model="claude-3-5-sonnet-20241022",
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
             max_tokens=4096,
             system=system,
             tools=tools,
             messages=messages,
-            betas=["computer-use-2024-10-22"],
         )
 
         messages.append({"role": "assistant", "content": response.content})
@@ -220,33 +259,29 @@ Example: [{{"name": "Acme", "valuation_usd": 1200000000, "arr_usd": 50000000, "e
                 status_callback(f"Research Agent: Claude extracted {len(extracted)} companies.")
             break
 
-        # Execute tool calls
+        # Execute tool calls — always return a screenshot so Claude sees the result
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
 
             action = block.input
+            coord_or_text = action.get("coordinate", action.get("text", ""))
+            if status_callback:
+                status_callback(f"Research Agent: Claude → {action.get('action')} {coord_or_text}")
 
-            if action.get("action") == "screenshot":
-                if status_callback:
-                    status_callback(f"Research Agent: Claude taking screenshot (step {iteration + 1})...")
-                screenshot = _take_screenshot(kernel_client, session_id)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot}}],
-                })
-            else:
-                if status_callback:
-                    status_callback(f"Research Agent: Claude → {action.get('action')} at {action.get('coordinate', action.get('text', ''))}")
-                _execute_computer_action(kernel_client, session_id, action)
-                time.sleep(0.8)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": "Action executed.",
-                })
+            _execute_computer_action(kernel_client, session_id, action)
+            time.sleep(0.8)
+
+            screenshot = _take_screenshot(kernel_client, session_id)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": [
+                    {"type": "text", "text": "Action executed. Current screen:"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot}},
+                ],
+            })
 
         if tool_results:
             messages.append({"role": "user", "content": tool_results})
